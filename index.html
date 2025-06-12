@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Gmail未読メールでLED色変更</title>
+
+  <script src="https://apis.google.com/js/api.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+  <script src="https://unpkg.com/obniz/obniz.js"></script>
+
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Noto Sans JP', sans-serif;
+      background: #fdf7f4;
+      color: #4a4a4a;
+      text-align: center;
+      padding: 40px 20px;
+    }
+
+    h1 {
+      color: #d88da0;
+      font-size: 2em;
+      margin-bottom: 15px;
+    }
+
+    #connection-status, #status {
+      margin: 10px 0;
+      font-size: 1rem;
+      font-weight: 500;
+    }
+
+    .button {
+      background-color: #f6d8dc;
+      border: none;
+      padding: 12px 24px;
+      margin: 10px;
+      font-size: 15px;
+      border-radius: 28px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      color: #59494d;
+      font-weight: 600;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.08);
+    }
+
+    .button:hover {
+      background-color: #efc3cb;
+      transform: scale(1.05);
+    }
+
+    .button:disabled {
+      background-color: #ddd;
+      color: #aaa;
+      cursor: not-allowed;
+    }
+
+    #mail-count {
+      font-size: 1.8em;
+      color: #dd748c;
+      margin-top: 20px;
+      font-weight: bold;
+    }
+
+    .led-preview {
+      width: 100px;
+      height: 100px;
+      margin: 20px auto;
+      border-radius: 50%;
+      background-color: #ccc;
+      box-shadow: 0 0 25px rgba(0,0,0,0.1);
+      border: 4px solid #fff;
+    }
+
+    #legend {
+      margin-top: 30px;
+      text-align: left;
+      max-width: 400px;
+      margin-left: auto;
+      margin-right: auto;
+      background: #ffffffcc;
+      padding: 20px;
+      border-radius: 20px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+    }
+
+    #legend h2 {
+      font-size: 1.2em;
+      margin-bottom: 10px;
+      color: #b07584;
+    }
+
+    .legend-list {
+      list-style: none;
+      padding-left: 0;
+    }
+
+    .legend-list li {
+      margin: 8px 0;
+      display: flex;
+      align-items: center;
+      font-size: 0.95em;
+      color: #5c4c50;
+    }
+
+    .color-box {
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
+      margin-right: 10px;
+      border: 1px solid #ccc;
+    }
+  </style>
+</head>
+<body>
+  <h1>📫 Gmail未読件数チェッカー</h1>
+
+  <div id="connection-status">Obniz: 未接続</div>
+  <div id="status">状態: 初期化中...</div>
+
+  <button id="authorize_button" class="button" disabled>🔐 Google認証</button>
+  <button id="check_button" class="button" disabled>📩 未読チェック</button>
+
+  <div id="mail-count">未読数: -</div>
+  <div class="led-preview" id="led-preview"></div>
+
+  <div id="legend">
+    <h2>💡 LEDの色と未読数の意味</h2>
+    <ul class="legend-list">
+      <li><span class="color-box" style="background-color: rgb(0,255,0);"></span> 0件：緑</li>
+      <li><span class="color-box" style="background-color: rgb(0,255,255);"></span> 1〜9件：水色</li>
+      <li><span class="color-box" style="background-color: rgb(0,0,255);"></span> 10〜49件：青</li>
+      <li><span class="color-box" style="background-color: rgb(128,0,128);"></span> 50〜199件：紫</li>
+      <li><span class="color-box" style="background-color: rgb(255, 234, 0);"></span> 200〜499件：黄色</li>
+      <li><span class="color-box" style="background-color: rgb(255,0,0);"></span> 500件以上：赤</li>
+    </ul>
+  </div>
+
+<script>
+  const CLIENT_ID = '624219302323-pgmffd5bvcnl641bbih91fkcqg56gc0u.apps.googleusercontent.com';
+  const API_KEY = 'AIzaSyDlnMHsWTZ_M3S-gOy5iZw5RYpT1NAd-zo';
+  const SCOPES = 'https://www.googleapis.com/auth/gmail.readonly';
+  const DISCOVERY_DOCS = ['https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest'];
+
+  let obniz;
+  let led;
+
+  let gapiInited = false;
+  let gisInited = false;
+  let tokenClient;
+
+  const authorizeButton = document.getElementById('authorize_button');
+  const checkButton = document.getElementById('check_button');
+  const statusDiv = document.getElementById('status');
+  const connectionDiv = document.getElementById('connection-status');
+  const mailCountDiv = document.getElementById('mail-count');
+  const ledPreview = document.getElementById('led-preview');
+
+  authorizeButton.onclick = handleAuthClick;
+  checkButton.onclick = checkUnreadEmails;
+
+  function gapiLoaded() {
+    gapi.load('client', initializeGapiClient);
+  }
+
+  async function initializeGapiClient() {
+    await gapi.client.init({
+      apiKey: API_KEY,
+      discoveryDocs: DISCOVERY_DOCS,
+    });
+    gapiInited = true;
+    maybeEnableAuth();
+  }
+
+  function gisLoaded() {
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: SCOPES,
+      callback: (tokenResponse) => {
+        if (tokenResponse.error) {
+          statusDiv.textContent = '認証エラー: ' + tokenResponse.error;
+          return;
+        }
+        gapi.client.setToken(tokenResponse);
+        statusDiv.textContent = '✅ 認証成功。メールチェック可能です。';
+        authorizeButton.disabled = true;
+        checkButton.disabled = false;
+      },
+    });
+    gisInited = true;
+    maybeEnableAuth();
+  }
+
+  function maybeEnableAuth() {
+    if (gapiInited && gisInited) {
+      authorizeButton.disabled = false;
+    }
+  }
+
+  function handleAuthClick() {
+    if (gapi.client.getToken() === null) {
+      tokenClient.requestAccessToken({ prompt: 'consent' });
+    } else {
+      statusDiv.textContent = 'すでに認証済みです。';
+      checkButton.disabled = false;
+    }
+  }
+
+  function initObniz() {
+    if (obniz) return;
+
+    obniz = new Obniz("XXXX-XXXX", {
+      auto_connect: true,
+      reset_obniz_on_ws_disconnection: false
+    });
+
+    obniz.onconnect = async () => {
+      connectionDiv.textContent = "Obniz: ✅ 接続済み";
+      connectionDiv.style.color = "green";
+      led = obniz.wired("WS2812", { din: 26 });
+    };
+
+    obniz.onclose = () => {
+      connectionDiv.textContent = "Obniz: ❌ 切断";
+      connectionDiv.style.color = "red";
+    };
+  }
+
+  async function checkUnreadEmails() {
+    statusDiv.textContent = "未読メールを確認中...";
+
+    if (!obniz || obniz.connectionState !== "connected") {
+      statusDiv.textContent += " Obnizが未接続です。";
+      return;
+    }
+
+    try {
+      const res = await gapi.client.gmail.users.labels.get({
+        userId: 'me',
+        id: 'UNREAD'
+      });
+
+      const count = res.result.messagesUnread;
+      mailCountDiv.textContent = `未読数: ${count}件`;
+      statusDiv.textContent = `📩 未読メール数: ${count}件`;
+
+      let rgb;
+      if (count === 0) rgb = [0, 255, 0];
+      else if (count < 10) rgb = [0, 255, 255];
+      else if (count < 50) rgb = [0, 0, 255];
+      else if (count < 200) rgb = [128, 0, 128];
+      else if (count < 500) rgb = [255, 234, 0];
+      else rgb = [255, 0, 0];
+
+      if (led) {
+        const colors = Array(15).fill(rgb);
+        led.rgbs(colors);
+      }
+
+      ledPreview.style.backgroundColor = `rgb(${rgb.join(',')})`;
+
+    } catch (error) {
+      console.error(error);
+      statusDiv.textContent = "エラー: " + error.message;
+    }
+  }
+
+  window.onload = () => {
+    initObniz();
+    gapiLoaded();
+    gisLoaded();
+  };
+</script>
+</body>
+</html>
